@@ -1,0 +1,223 @@
+package vt
+
+import (
+	"slices"
+
+	uv "github.com/charmbracelet/ultraviolet"
+)
+
+type logicalLine struct {
+	cells uv.Line
+}
+
+type logicalPosition struct {
+	line   int
+	offset int
+}
+
+// resize reflows the screen and its scrollback while preserving the cursor's
+// position in the logical line. It reports whether the cursor remains in the
+// pending-wrap position at the new width.
+func (s *Screen) resize(width, height int, cursorPastEnd bool) bool {
+	if s.buf == nil {
+		s.buf = uv.NewRenderBuffer(width, height)
+		s.wrapped = make([]bool, height)
+		s.scroll = s.buf.Bounds()
+		return false
+	}
+	if width == s.buf.Width() && height == s.buf.Height() {
+		s.scroll = s.buf.Bounds()
+		return cursorPastEnd
+	}
+
+	oldWidth := s.buf.Width()
+	scrollbackLen := 0
+	if s.scrollback != nil {
+		scrollbackLen = len(s.scrollback.lines)
+	}
+
+	lastScreenLine := max(s.cur.Y, s.saved.Y)
+	for y := s.buf.Height() - 1; y >= 0; y-- {
+		if !s.isLineEmpty(s.buf.Line(y)) {
+			lastScreenLine = max(lastScreenLine, y)
+			break
+		}
+	}
+
+	lines := make([]uv.Line, 0, scrollbackLen+lastScreenLine+1)
+	wrapped := make([]bool, 0, cap(lines))
+	if s.scrollback != nil {
+		lines = append(lines, s.scrollback.lines...)
+		wrapped = append(wrapped, s.scrollback.wrapped...)
+	}
+	for y := 0; y <= lastScreenLine && y < s.buf.Height(); y++ {
+		lines = append(lines, s.buf.Line(y))
+		wrapped = append(wrapped, y < len(s.wrapped) && s.wrapped[y])
+	}
+
+	curOffset := s.cur.X
+	if cursorPastEnd {
+		curOffset++
+	}
+	logical, cur, saved := makeLogicalLines(
+		lines,
+		wrapped,
+		oldWidth,
+		uv.Pos(curOffset, scrollbackLen+s.cur.Y),
+		uv.Pos(s.saved.X, scrollbackLen+s.saved.Y),
+	)
+
+	physical, rewrapped, lineStarts := reflow(logical, width)
+	curPos := reflowPosition(logical[cur.line].cells, width, cur.offset)
+	curPos.Y += lineStarts[cur.line]
+	savedPos := reflowPosition(logical[saved.line].cells, width, saved.offset)
+	savedPos.Y += lineStarts[saved.line]
+
+	start := max(0, len(physical)-height)
+	start = min(start, curPos.Y)
+	start = max(start, curPos.Y-height+1)
+	if s.scrollback != nil {
+		s.scrollback.replace(physical[:start], rewrapped[:start])
+	}
+
+	s.buf = uv.NewRenderBuffer(width, height)
+	s.wrapped = make([]bool, height)
+	for y := start; y < len(physical) && y-start < height; y++ {
+		s.buf.Lines[y-start] = slices.Clone(physical[y])
+		s.wrapped[y-start] = rewrapped[y]
+	}
+	s.buf.Touched = nil
+	s.scroll = s.buf.Bounds()
+
+	s.cur.X, s.cur.Y, cursorPastEnd = resizedCursor(curPos, start, width, height)
+	s.saved.X, s.saved.Y, _ = resizedCursor(savedPos, start, width, height)
+	return cursorPastEnd
+}
+
+func makeLogicalLines(lines []uv.Line, wrapped []bool, width int, cur, saved uv.Position) (
+	logical []logicalLine,
+	curPos logicalPosition,
+	savedPos logicalPosition,
+) {
+	logical = append(logical, logicalLine{})
+	for y, line := range lines {
+		ll := &logical[len(logical)-1]
+		base := len(ll.cells)
+		if y == cur.Y {
+			curPos = logicalPosition{len(logical) - 1, base + cur.X}
+		}
+		if y == saved.Y {
+			savedPos = logicalPosition{len(logical) - 1, base + saved.X}
+		}
+
+		continues := y < len(wrapped) && wrapped[y]
+		last := lineContentWidth(line)
+		if continues {
+			last = width
+		}
+		if y == cur.Y {
+			last = max(last, cur.X)
+		}
+		if y == saved.Y {
+			last = max(last, saved.X)
+		}
+		last = min(last, len(line))
+		ll.cells = append(ll.cells, slices.Clone(line[:last])...)
+
+		if !continues && y < len(lines)-1 {
+			logical = append(logical, logicalLine{})
+		}
+	}
+	return logical, curPos, savedPos
+}
+
+func lineContentWidth(line uv.Line) int {
+	for i := len(line) - 1; i >= 0; i-- {
+		cell := &line[i]
+		if !cell.IsZero() && !cell.Equal(&uv.EmptyCell) {
+			return i + 1
+		}
+	}
+	return 0
+}
+
+func reflow(logical []logicalLine, width int) (lines []uv.Line, wrapped []bool, starts []int) {
+	starts = make([]int, 0, len(logical))
+	for _, line := range logical {
+		rows := reflowLine(line.cells, width)
+		starts = append(starts, len(lines))
+		lines = append(lines, rows...)
+		for y := range rows {
+			wrapped = append(wrapped, y < len(rows)-1)
+		}
+	}
+	return lines, wrapped, starts
+}
+
+func reflowLine(cells uv.Line, width int) []uv.Line {
+	rows := []uv.Line{uv.NewLine(width)}
+	x, y := 0, 0
+	for i := 0; i < len(cells); {
+		cell := &cells[i]
+		cellWidth := max(cell.Width, 1)
+		if x > 0 && x+cellWidth > width {
+			rows = append(rows, uv.NewLine(width))
+			x, y = 0, y+1
+		}
+
+		rows[y].Set(x, cell)
+		x += cellWidth
+		i += cellWidth
+		if x == width && i < len(cells) {
+			rows = append(rows, uv.NewLine(width))
+			x, y = 0, y+1
+		}
+	}
+	return rows
+}
+
+func reflowPosition(cells uv.Line, width, offset int) uv.Position {
+	offset = min(offset, len(cells))
+	x, y := 0, 0
+	for i := 0; i < len(cells); {
+		cellWidth := max(cells[i].Width, 1)
+		if x > 0 && x+cellWidth > width {
+			x, y = 0, y+1
+		}
+		if offset >= i && offset < i+cellWidth {
+			return uv.Pos(x+offset-i, y)
+		}
+		x += cellWidth
+		i += cellWidth
+		if x == width && i < len(cells) {
+			x, y = 0, y+1
+		}
+		if offset == i {
+			return uv.Pos(x, y)
+		}
+	}
+	return uv.Pos(x, y)
+}
+
+func resizedCursor(pos uv.Position, start, width, height int) (x, y int, pastEnd bool) {
+	y = pos.Y - start
+	if y < 0 {
+		y = 0
+	}
+	if y >= height {
+		y = height - 1
+	}
+	if pos.X >= width {
+		return width - 1, y, true
+	}
+	return max(pos.X, 0), y, false
+}
+
+func (s *Scrollback) replace(lines []uv.Line, wrapped []bool) {
+	if len(lines) > s.maxLines {
+		lines = lines[len(lines)-s.maxLines:]
+		wrapped = wrapped[len(wrapped)-s.maxLines:]
+	}
+	s.lines = slices.Clone(lines)
+	s.wrapped = slices.Clone(wrapped)
+}

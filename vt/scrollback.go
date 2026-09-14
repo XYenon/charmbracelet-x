@@ -12,6 +12,7 @@ const DefaultScrollbackSize = 10000
 // Scrollback represents a scrollback buffer that stores lines scrolled off the screen.
 type Scrollback struct {
 	lines    []uv.Line
+	wrapped  []bool
 	maxLines int
 }
 
@@ -29,29 +30,36 @@ func NewScrollback(maxLines int) *Scrollback {
 // Push adds a line to the scrollback buffer.
 // If the buffer is full, the oldest line is removed.
 func (s *Scrollback) Push(line uv.Line) {
+	s.push(line, false)
+}
+
+// push adds a line and records whether it continues onto the next line.
+func (s *Scrollback) push(line uv.Line, wrapped bool) {
 	if s == nil || s.maxLines <= 0 {
 		return
 	}
 
-	// Find last non-empty cell to trim trailing empty cells.
-	// This helps with wrapping and window resizing.
-	lastNonEmpty := -1
-	for i := len(line) - 1; i >= 0; i-- {
-		c := &line[i]
-		if !c.IsZero() && !c.Equal(&uv.EmptyCell) {
-			lastNonEmpty = i
-			break
+	last := len(line)
+	if !wrapped {
+		// Trailing empty cells on a hard line are not part of its contents.
+		last = 0
+		for i := len(line) - 1; i >= 0; i-- {
+			c := &line[i]
+			if !c.IsZero() && !c.Equal(&uv.EmptyCell) {
+				last = i + 1
+				break
+			}
 		}
 	}
 
-	// Clone the line content up to and including the last non-empty cell
-	cloned := slices.Clone(line[:lastNonEmpty+1])
+	cloned := slices.Clone(line[:last])
 
 	if len(s.lines) >= s.maxLines {
-		// Remove oldest line and append new one
 		s.lines = slices.Delete(s.lines, 0, 1)
+		s.wrapped = slices.Delete(s.wrapped, 0, 1)
 	}
 	s.lines = append(s.lines, cloned)
+	s.wrapped = append(s.wrapped, wrapped)
 }
 
 // PushN adds n lines from the buffer starting at line y to the scrollback.
@@ -92,8 +100,8 @@ func (s *Scrollback) SetMaxLines(maxLines int) {
 
 	s.maxLines = maxLines
 	if len(s.lines) > maxLines {
-		// Remove oldest lines
 		s.lines = s.lines[len(s.lines)-maxLines:]
+		s.wrapped = s.wrapped[len(s.wrapped)-maxLines:]
 	}
 }
 
@@ -122,6 +130,7 @@ func (s *Scrollback) Clear() {
 		return
 	}
 	s.lines = s.lines[:0]
+	s.wrapped = s.wrapped[:0]
 }
 
 // CellAt returns the cell at the given position in the scrollback buffer.

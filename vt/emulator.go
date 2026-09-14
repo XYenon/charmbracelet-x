@@ -81,6 +81,7 @@ func NewEmulator(w, h int) *Emulator {
 	t := new(Emulator)
 	t.scrs[0] = *NewScreen(w, h)
 	t.scrs[1] = *NewScreen(w, h)
+	t.scrs[1].SetScrollback(nil)
 	t.scr = &t.scrs[0]
 	t.scrs[0].cb = &t.cb
 	t.scrs[1].cb = &t.cb
@@ -214,32 +215,19 @@ func (e *Emulator) CursorPosition() uv.Position {
 
 // Resize resizes the terminal.
 func (e *Emulator) Resize(width int, height int) {
-	x, y := e.scr.CursorPosition()
-	if e.atPhantom {
-		if x < width-1 {
-			e.atPhantom = false
-			x++
-		}
+	old := e.CursorPosition()
+	mainPastEnd := e.scrs[0].resize(width, height, e.scr == &e.scrs[0] && e.atPhantom)
+	altPastEnd := e.scrs[1].resize(width, height, e.scr == &e.scrs[1] && e.atPhantom)
+	if e.scr == &e.scrs[0] {
+		e.atPhantom = mainPastEnd
+	} else {
+		e.atPhantom = altPastEnd
 	}
-
-	if y < 0 {
-		y = 0
-	}
-	if y >= height {
-		y = height - 1
-	}
-	if x < 0 {
-		x = 0
-	}
-	if x >= width {
-		x = width - 1
-	}
-
-	e.scrs[0].Resize(width, height)
-	e.scrs[1].Resize(width, height)
 	e.tabstops = uv.DefaultTabStops(width)
 
-	e.setCursor(x, y)
+	if current := e.CursorPosition(); e.cb.CursorPosition != nil && old != current {
+		e.cb.CursorPosition(old, current)
+	}
 
 	if e.isModeSet(ansi.ModeInBandResize) {
 		_, _ = io.WriteString(e.pw, ansi.InBandResize(e.Height(), e.Width(), 0, 0))
