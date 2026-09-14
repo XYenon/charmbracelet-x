@@ -19,6 +19,8 @@ type Screen struct {
 	scrollback *Scrollback
 	// wrapped marks lines that continue onto the following physical line.
 	wrapped []bool
+	// wrapWidth records the meaningful terminal columns in wrapped lines.
+	wrapWidth []int
 }
 
 // NewScreen creates a new screen.
@@ -27,6 +29,7 @@ func NewScreen(w, h int) *Screen {
 		buf:        uv.NewRenderBuffer(w, h),
 		scrollback: NewScrollback(DefaultScrollbackSize),
 		wrapped:    make([]bool, h),
+		wrapWidth:  make([]int, h),
 	}
 	s.scroll = s.buf.Bounds()
 	return &s
@@ -41,6 +44,7 @@ func (s *Screen) Reset() {
 	s.saved = Cursor{}
 	s.scroll = s.buf.Bounds()
 	clear(s.wrapped)
+	clear(s.wrapWidth)
 	s.buf.Touched = nil
 }
 
@@ -98,7 +102,7 @@ func (s *Screen) ClearWithScrollback() {
 		for y := 0; y < s.buf.Height(); y++ {
 			line := s.buf.Line(y)
 			if line != nil && !s.isLineEmpty(line) {
-				s.scrollback.push(line, s.wrapped[y])
+				s.scrollback.push(line, s.wrapped[y], s.wrapWidth[y])
 			}
 		}
 	}
@@ -121,6 +125,7 @@ func (s *Screen) ClearArea(area uv.Rectangle) {
 	if area.Min.X == 0 && area.Max.X == s.buf.Width() {
 		for y := max(area.Min.Y, 0); y < min(area.Max.Y, len(s.wrapped)); y++ {
 			s.wrapped[y] = false
+			s.wrapWidth[y] = 0
 		}
 	}
 	s.touchArea(area)
@@ -137,6 +142,7 @@ func (s *Screen) FillArea(c *uv.Cell, area uv.Rectangle) {
 	if area.Min.X == 0 && area.Max.X == s.buf.Width() {
 		for y := max(area.Min.Y, 0); y < min(area.Max.Y, len(s.wrapped)); y++ {
 			s.wrapped[y] = false
+			s.wrapWidth[y] = 0
 		}
 	}
 	s.touchArea(area)
@@ -373,7 +379,7 @@ func (s *Screen) DeleteLine(n int) bool {
 		// Save lines that will be deleted
 		linesToSave := min(n, scroll.Max.Y-y)
 		for i := range linesToSave {
-			s.scrollback.push(s.buf.Line(y+i), s.wrapped[y+i])
+			s.scrollback.push(s.buf.Line(y+i), s.wrapped[y+i], s.wrapWidth[y+i])
 		}
 	}
 
@@ -383,30 +389,37 @@ func (s *Screen) DeleteLine(n int) bool {
 	return true
 }
 
-func (s *Screen) setWrapped(y int, wrapped bool) {
+func (s *Screen) setWrapped(y int, wrapped bool, width int) {
 	if y >= 0 && y < len(s.wrapped) {
 		s.wrapped[y] = wrapped
+		s.wrapWidth[y] = width
 	}
 }
 
 func (s *Screen) insertWrappedLines(y, n int, area uv.Rectangle) {
 	if area.Min.X != 0 || area.Max.X != s.buf.Width() {
 		clear(s.wrapped[area.Min.Y:area.Max.Y])
+		clear(s.wrapWidth[area.Min.Y:area.Max.Y])
 		return
 	}
 	n = min(n, area.Max.Y-y)
 	copy(s.wrapped[y+n:area.Max.Y], s.wrapped[y:area.Max.Y-n])
+	copy(s.wrapWidth[y+n:area.Max.Y], s.wrapWidth[y:area.Max.Y-n])
 	clear(s.wrapped[y : y+n])
+	clear(s.wrapWidth[y : y+n])
 }
 
 func (s *Screen) deleteWrappedLines(y, n int, area uv.Rectangle) {
 	if area.Min.X != 0 || area.Max.X != s.buf.Width() {
 		clear(s.wrapped[area.Min.Y:area.Max.Y])
+		clear(s.wrapWidth[area.Min.Y:area.Max.Y])
 		return
 	}
 	n = min(n, area.Max.Y-y)
 	copy(s.wrapped[y:area.Max.Y-n], s.wrapped[y+n:area.Max.Y])
+	copy(s.wrapWidth[y:area.Max.Y-n], s.wrapWidth[y+n:area.Max.Y])
 	clear(s.wrapped[area.Max.Y-n : area.Max.Y])
+	clear(s.wrapWidth[area.Max.Y-n : area.Max.Y])
 }
 
 // blankCell returns the cursor blank cell with the background color set to the

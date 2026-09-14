@@ -22,6 +22,7 @@ func (s *Screen) resize(width, height int, cursorPastEnd bool) bool {
 	if s.buf == nil {
 		s.buf = uv.NewRenderBuffer(width, height)
 		s.wrapped = make([]bool, height)
+		s.wrapWidth = make([]int, height)
 		s.scroll = s.buf.Bounds()
 		return false
 	}
@@ -30,7 +31,6 @@ func (s *Screen) resize(width, height int, cursorPastEnd bool) bool {
 		return cursorPastEnd
 	}
 
-	oldWidth := s.buf.Width()
 	scrollbackLen := 0
 	if s.scrollback != nil {
 		scrollbackLen = len(s.scrollback.lines)
@@ -46,13 +46,16 @@ func (s *Screen) resize(width, height int, cursorPastEnd bool) bool {
 
 	lines := make([]uv.Line, 0, scrollbackLen+lastScreenLine+1)
 	wrapped := make([]bool, 0, cap(lines))
+	wrapWidth := make([]int, 0, cap(lines))
 	if s.scrollback != nil {
 		lines = append(lines, s.scrollback.lines...)
 		wrapped = append(wrapped, s.scrollback.wrapped...)
+		wrapWidth = append(wrapWidth, s.scrollback.wrapWidth...)
 	}
 	for y := 0; y <= lastScreenLine && y < s.buf.Height(); y++ {
 		lines = append(lines, s.buf.Line(y))
 		wrapped = append(wrapped, y < len(s.wrapped) && s.wrapped[y])
+		wrapWidth = append(wrapWidth, s.wrapWidth[y])
 	}
 
 	curOffset := s.cur.X
@@ -62,12 +65,12 @@ func (s *Screen) resize(width, height int, cursorPastEnd bool) bool {
 	logical, cur, saved := makeLogicalLines(
 		lines,
 		wrapped,
-		oldWidth,
+		wrapWidth,
 		uv.Pos(curOffset, scrollbackLen+s.cur.Y),
 		uv.Pos(s.saved.X, scrollbackLen+s.saved.Y),
 	)
 
-	physical, rewrapped, lineStarts := reflow(logical, width)
+	physical, rewrapped, rewrapWidth, lineStarts := reflow(logical, width)
 	curPos := reflowPosition(logical[cur.line].cells, width, cur.offset)
 	curPos.Y += lineStarts[cur.line]
 	savedPos := reflowPosition(logical[saved.line].cells, width, saved.offset)
@@ -77,14 +80,16 @@ func (s *Screen) resize(width, height int, cursorPastEnd bool) bool {
 	start = min(start, curPos.Y)
 	start = max(start, curPos.Y-height+1)
 	if s.scrollback != nil {
-		s.scrollback.replace(physical[:start], rewrapped[:start])
+		s.scrollback.replace(physical[:start], rewrapped[:start], rewrapWidth[:start])
 	}
 
 	s.buf = uv.NewRenderBuffer(width, height)
 	s.wrapped = make([]bool, height)
+	s.wrapWidth = make([]int, height)
 	for y := start; y < len(physical) && y-start < height; y++ {
 		s.buf.Lines[y-start] = slices.Clone(physical[y])
 		s.wrapped[y-start] = rewrapped[y]
+		s.wrapWidth[y-start] = rewrapWidth[y]
 	}
 	s.buf.Touched = nil
 	s.scroll = s.buf.Bounds()
@@ -94,7 +99,7 @@ func (s *Screen) resize(width, height int, cursorPastEnd bool) bool {
 	return cursorPastEnd
 }
 
-func makeLogicalLines(lines []uv.Line, wrapped []bool, width int, cur, saved uv.Position) (
+func makeLogicalLines(lines []uv.Line, wrapped []bool, wrapWidth []int, cur, saved uv.Position) (
 	logical []logicalLine,
 	curPos logicalPosition,
 	savedPos logicalPosition,
@@ -113,7 +118,7 @@ func makeLogicalLines(lines []uv.Line, wrapped []bool, width int, cur, saved uv.
 		continues := y < len(wrapped) && wrapped[y]
 		last := lineContentWidth(line)
 		if continues {
-			last = width
+			last = wrapWidth[y]
 		}
 		if y == cur.Y {
 			last = max(last, cur.X)
@@ -141,39 +146,50 @@ func lineContentWidth(line uv.Line) int {
 	return 0
 }
 
-func reflow(logical []logicalLine, width int) (lines []uv.Line, wrapped []bool, starts []int) {
+func reflow(logical []logicalLine, width int) (lines []uv.Line, wrapped []bool, wrapWidth []int, starts []int) {
 	starts = make([]int, 0, len(logical))
 	for _, line := range logical {
-		rows := reflowLine(line.cells, width)
+		rows, widths := reflowLine(line.cells, width)
 		starts = append(starts, len(lines))
 		lines = append(lines, rows...)
 		for y := range rows {
-			wrapped = append(wrapped, y < len(rows)-1)
+			continues := y < len(rows)-1
+			wrapped = append(wrapped, continues)
+			if continues {
+				wrapWidth = append(wrapWidth, widths[y])
+			} else {
+				wrapWidth = append(wrapWidth, 0)
+			}
 		}
 	}
-	return lines, wrapped, starts
+	return lines, wrapped, wrapWidth, starts
 }
 
-func reflowLine(cells uv.Line, width int) []uv.Line {
+func reflowLine(cells uv.Line, width int) ([]uv.Line, []int) {
 	rows := []uv.Line{uv.NewLine(width)}
+	widths := []int{0}
 	x, y := 0, 0
 	for i := 0; i < len(cells); {
 		cell := &cells[i]
 		cellWidth := max(cell.Width, 1)
 		if x > 0 && x+cellWidth > width {
+			widths[y] = x
 			rows = append(rows, uv.NewLine(width))
+			widths = append(widths, 0)
 			x, y = 0, y+1
 		}
 
 		rows[y].Set(x, cell)
 		x += cellWidth
+		widths[y] = x
 		i += cellWidth
 		if x == width && i < len(cells) {
 			rows = append(rows, uv.NewLine(width))
+			widths = append(widths, 0)
 			x, y = 0, y+1
 		}
 	}
-	return rows
+	return rows, widths
 }
 
 func reflowPosition(cells uv.Line, width, offset int) uv.Position {
@@ -213,11 +229,13 @@ func resizedCursor(pos uv.Position, start, width, height int) (x, y int, pastEnd
 	return max(pos.X, 0), y, false
 }
 
-func (s *Scrollback) replace(lines []uv.Line, wrapped []bool) {
+func (s *Scrollback) replace(lines []uv.Line, wrapped []bool, wrapWidth []int) {
 	if len(lines) > s.maxLines {
 		lines = lines[len(lines)-s.maxLines:]
 		wrapped = wrapped[len(wrapped)-s.maxLines:]
+		wrapWidth = wrapWidth[len(wrapWidth)-s.maxLines:]
 	}
 	s.lines = slices.Clone(lines)
 	s.wrapped = slices.Clone(wrapped)
+	s.wrapWidth = slices.Clone(wrapWidth)
 }

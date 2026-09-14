@@ -11,9 +11,10 @@ const DefaultScrollbackSize = 10000
 
 // Scrollback represents a scrollback buffer that stores lines scrolled off the screen.
 type Scrollback struct {
-	lines    []uv.Line
-	wrapped  []bool
-	maxLines int
+	lines     []uv.Line
+	wrapped   []bool
+	wrapWidth []int
+	maxLines  int
 }
 
 // NewScrollback creates a new scrollback buffer with the given maximum number of lines.
@@ -30,11 +31,11 @@ func NewScrollback(maxLines int) *Scrollback {
 // Push adds a line to the scrollback buffer.
 // If the buffer is full, the oldest line is removed.
 func (s *Scrollback) Push(line uv.Line) {
-	s.push(line, false)
+	s.push(line, false, 0)
 }
 
 // push adds a line and records whether it continues onto the next line.
-func (s *Scrollback) push(line uv.Line, wrapped bool) {
+func (s *Scrollback) push(line uv.Line, wrapped bool, wrapWidth int) {
 	if s == nil || s.maxLines <= 0 {
 		return
 	}
@@ -57,9 +58,11 @@ func (s *Scrollback) push(line uv.Line, wrapped bool) {
 	if len(s.lines) >= s.maxLines {
 		s.lines = slices.Delete(s.lines, 0, 1)
 		s.wrapped = slices.Delete(s.wrapped, 0, 1)
+		s.wrapWidth = slices.Delete(s.wrapWidth, 0, 1)
 	}
 	s.lines = append(s.lines, cloned)
 	s.wrapped = append(s.wrapped, wrapped)
+	s.wrapWidth = append(s.wrapWidth, wrapWidth)
 }
 
 // PushN adds n lines from the buffer starting at line y to the scrollback.
@@ -102,6 +105,7 @@ func (s *Scrollback) SetMaxLines(maxLines int) {
 	if len(s.lines) > maxLines {
 		s.lines = s.lines[len(s.lines)-maxLines:]
 		s.wrapped = s.wrapped[len(s.wrapped)-maxLines:]
+		s.wrapWidth = s.wrapWidth[len(s.wrapWidth)-maxLines:]
 	}
 }
 
@@ -131,6 +135,7 @@ func (s *Scrollback) Clear() {
 	}
 	s.lines = s.lines[:0]
 	s.wrapped = s.wrapped[:0]
+	s.wrapWidth = s.wrapWidth[:0]
 }
 
 // CellAt returns the cell at the given position in the scrollback buffer.

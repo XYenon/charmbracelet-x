@@ -2,14 +2,16 @@ package vt
 
 import (
 	"slices"
+	"strings"
 
 	uv "github.com/charmbracelet/ultraviolet"
 )
 
 // PhysicalLine is an immutable snapshot of one terminal row.
 type PhysicalLine struct {
-	cells   uv.Line
-	wrapped bool
+	cells     uv.Line
+	wrapped   bool
+	wrapWidth int
 }
 
 // Cells returns a copy of the cells in the physical line.
@@ -17,8 +19,19 @@ func (l PhysicalLine) Cells() uv.Line {
 	return slices.Clone(l.cells)
 }
 
-// String returns the plain-text contents of the physical line.
+// String returns the plain-text contents of the physical line. It preserves
+// spaces consumed before an automatic wrap while omitting unused right-side
+// padding. Wide-cell placeholders are not included.
 func (l PhysicalLine) String() string {
+	if l.wrapWidth > 0 {
+		var text strings.Builder
+		for _, cell := range l.cells[:min(l.wrapWidth, len(l.cells))] {
+			if !cell.IsZero() {
+				text.WriteString(cell.Content)
+			}
+		}
+		return text.String()
+	}
 	return l.cells.String()
 }
 
@@ -36,10 +49,11 @@ func (l PhysicalLine) Wrapped() bool {
 	return l.wrapped
 }
 
-func newPhysicalLine(line uv.Line, wrapped bool) PhysicalLine {
+func newPhysicalLine(line uv.Line, wrapped bool, wrapWidth int) PhysicalLine {
 	return PhysicalLine{
-		cells:   slices.Clone(line),
-		wrapped: wrapped,
+		cells:     slices.Clone(line),
+		wrapped:   wrapped,
+		wrapWidth: wrapWidth,
 	}
 }
 
@@ -56,7 +70,7 @@ func (e *Emulator) PhysicalLines() []PhysicalLine {
 
 	lines := make([]PhysicalLine, 0, scrollbackLen+e.scr.Height())
 	for i := 0; i < scrollbackLen; i++ {
-		lines = append(lines, newPhysicalLine(scrollback.lines[i], scrollback.wrapped[i]))
+		lines = append(lines, newPhysicalLine(scrollback.lines[i], scrollback.wrapped[i], scrollback.wrapWidth[i]))
 	}
 	if e.IsAltScreen() && len(lines) > 0 {
 		lines[len(lines)-1].wrapped = false
@@ -64,7 +78,11 @@ func (e *Emulator) PhysicalLines() []PhysicalLine {
 
 	for y := 0; y < e.scr.Height(); y++ {
 		wrapped := y < len(e.scr.wrapped) && e.scr.wrapped[y]
-		lines = append(lines, newPhysicalLine(e.scr.buf.Line(y), wrapped))
+		wrapWidth := e.scr.wrapWidth[y]
+		if e.atPhantom && y == e.scr.cur.Y {
+			wrapWidth = e.scr.Width()
+		}
+		lines = append(lines, newPhysicalLine(e.scr.buf.Line(y), wrapped, wrapWidth))
 	}
 	if len(lines) > 0 {
 		lines[len(lines)-1].wrapped = false

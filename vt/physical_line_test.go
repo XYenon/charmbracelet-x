@@ -161,6 +161,76 @@ func TestPhysicalLinesPendingWrap(t *testing.T) {
 	}
 }
 
+func TestPhysicalLinesPreserveSpacesAtWrap(t *testing.T) {
+	testCases := []struct {
+		name  string
+		width int
+		text  string
+	}{
+		{name: "single space", width: 4, text: "abc def"},
+		{name: "consecutive spaces", width: 4, text: "ab  cd"},
+		{name: "space in scrollback", width: 4, text: "abc defghijkl"},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := NewEmulator(tc.width, 2)
+			_, _ = e.WriteString(tc.text)
+			if got, want := logicalLineStrings(e.PhysicalLines())[0], tc.text; got != want {
+				t.Fatalf("logical line = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestPhysicalLinesExcludeUnusedSpaceBeforeWideCharacter(t *testing.T) {
+	e := NewEmulator(4, 2)
+	const text = "abc你"
+	_, _ = e.WriteString(text)
+
+	lines := e.PhysicalLines()
+	if got, want := lines[0].String(), "abc"; got != want {
+		t.Fatalf("first physical line = %q, want %q", got, want)
+	}
+	if got, want := logicalLineStrings(lines)[0], text; got != want {
+		t.Fatalf("logical line = %q, want %q", got, want)
+	}
+
+	e.Resize(3, 3)
+	e.Resize(8, 2)
+	if got, want := logicalLineStrings(e.PhysicalLines())[0], text; got != want {
+		t.Fatalf("logical line after resize = %q, want %q", got, want)
+	}
+}
+
+func TestPhysicalLinesPreserveSpacesThroughResize(t *testing.T) {
+	e := NewEmulator(4, 3)
+	const text = "abc def"
+	_, _ = e.WriteString(text)
+
+	e.Resize(3, 3)
+	if got, want := logicalLineStrings(e.PhysicalLines())[0], text; got != want {
+		t.Fatalf("logical line after shrinking = %q, want %q", got, want)
+	}
+
+	e.Resize(8, 3)
+	if got, want := logicalLineStrings(e.PhysicalLines())[0], text; got != want {
+		t.Fatalf("logical line after expanding = %q, want %q", got, want)
+	}
+}
+
+func TestPhysicalLinesPreservePendingWrapSpace(t *testing.T) {
+	e := NewEmulator(4, 2)
+	_, _ = e.WriteString("abc ")
+
+	line := e.PhysicalLines()[0]
+	if line.Wrapped() {
+		t.Fatal("pending wrap should not report a continuation")
+	}
+	if got, want := line.String(), "abc "; got != want {
+		t.Fatalf("pending-wrap line = %q, want %q", got, want)
+	}
+}
+
 func TestSafeEmulatorPhysicalLines(t *testing.T) {
 	e := NewSafeEmulator(5, 2)
 	_, _ = e.Write([]byte("abcdef"))
