@@ -181,6 +181,14 @@ func (se *SafeEmulator) Draw(s uv.Screen, a uv.Rectangle) {
 	se.Emulator.Draw(s, a)
 }
 
+// PhysicalLines returns an immutable snapshot of scrollback and the active
+// screen in a concurrency-safe manner.
+func (se *SafeEmulator) PhysicalLines() []PhysicalLine {
+	se.mu.RLock()
+	defer se.mu.RUnlock()
+	return se.Emulator.PhysicalLines()
+}
+
 // Scrollback returns the scrollback buffer in a concurrency-safe manner.
 func (se *SafeEmulator) Scrollback() *Scrollback {
 	se.mu.RLock()
