@@ -23,9 +23,10 @@ func (l PhysicalLine) Cells() uv.Line {
 // spaces consumed before an automatic wrap while omitting unused right-side
 // padding. Wide-cell placeholders are not included.
 func (l PhysicalLine) String() string {
-	if l.wrapWidth > 0 {
+	if l.wrapped || l.wrapWidth > 0 {
+		width := effectiveLineWidth(l.cells, l.wrapWidth)
 		var text strings.Builder
-		for _, cell := range l.cells[:min(l.wrapWidth, len(l.cells))] {
+		for _, cell := range l.cells[:min(width, len(l.cells))] {
 			if !cell.IsZero() {
 				text.WriteString(cell.Content)
 			}

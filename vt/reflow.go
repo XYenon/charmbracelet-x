@@ -60,7 +60,12 @@ func (s *Screen) resize(width, height int, cursorPastEnd bool) bool {
 
 	curOffset := s.cur.X
 	if cursorPastEnd {
-		curOffset++
+		cell := s.buf.CellAt(s.cur.X, s.cur.Y)
+		if cell != nil {
+			curOffset += max(cell.Width, 1)
+		} else {
+			curOffset++
+		}
 	}
 	logical, cur, saved := makeLogicalLines(
 		lines,
@@ -118,7 +123,7 @@ func makeLogicalLines(lines []uv.Line, wrapped []bool, wrapWidth []int, cur, sav
 		continues := y < len(wrapped) && wrapped[y]
 		last := lineContentWidth(line)
 		if continues {
-			last = wrapWidth[y]
+			last = effectiveLineWidth(line, wrapWidth[y])
 		}
 		if y == cur.Y {
 			last = max(last, cur.X)
@@ -144,6 +149,10 @@ func lineContentWidth(line uv.Line) int {
 		}
 	}
 	return 0
+}
+
+func effectiveLineWidth(line uv.Line, wrapWidth int) int {
+	return max(wrapWidth, lineContentWidth(line))
 }
 
 func reflow(logical []logicalLine, width int) (lines []uv.Line, wrapped []bool, wrapWidth []int, starts []int) {

@@ -71,6 +71,17 @@ func (s *Screen) CellAt(x int, y int) *uv.Cell {
 // SetCell sets the cell at the given x, y position.
 func (s *Screen) SetCell(x, y int, c *uv.Cell) {
 	s.buf.SetCell(x, y, c)
+	if y >= 0 && y < len(s.wrapped) && s.wrapped[y] {
+		end := x
+		if c != nil {
+			end += max(c.Width, 1)
+		}
+		s.wrapWidth[y] = min(s.buf.Width(), max(
+			s.wrapWidth[y],
+			end,
+			lineContentWidth(s.buf.Line(y)),
+		))
+	}
 }
 
 // Height returns the height of the screen.
@@ -112,11 +123,11 @@ func (s *Screen) clearWithScrollback(pendingWrap bool) {
 		line := s.buf.Line(y)
 		if line != nil && (!s.isLineEmpty(line) || continued || s.wrapped[y]) {
 			wrapWidth := s.wrapWidth[y]
-			if continued && y == s.cur.Y {
+			if y == s.cur.Y && continued {
 				wrapWidth = s.cur.X
-				if pendingWrap {
-					wrapWidth = s.buf.Width()
-				}
+			}
+			if y == s.cur.Y && pendingWrap {
+				wrapWidth = s.buf.Width()
 			}
 			s.scrollback.push(line, s.wrapped[y], wrapWidth)
 		}
@@ -143,6 +154,12 @@ func (s *Screen) ClearArea(area uv.Rectangle) {
 			s.wrapped[y] = false
 			s.wrapWidth[y] = 0
 		}
+	} else {
+		for y := max(area.Min.Y, 0); y < min(area.Max.Y, len(s.wrapped)); y++ {
+			if s.wrapped[y] {
+				s.wrapWidth[y] = effectiveLineWidth(s.buf.Line(y), s.wrapWidth[y])
+			}
+		}
 	}
 	s.touchArea(area)
 }
@@ -159,6 +176,17 @@ func (s *Screen) FillArea(c *uv.Cell, area uv.Rectangle) {
 		for y := max(area.Min.Y, 0); y < min(area.Max.Y, len(s.wrapped)); y++ {
 			s.wrapped[y] = false
 			s.wrapWidth[y] = 0
+		}
+	} else {
+		for y := max(area.Min.Y, 0); y < min(area.Max.Y, len(s.wrapped)); y++ {
+			if !s.wrapped[y] {
+				continue
+			}
+			width := effectiveLineWidth(s.buf.Line(y), s.wrapWidth[y])
+			if c != nil && c.Content != "" && c.Content != " " {
+				width = max(width, area.Max.X)
+			}
+			s.wrapWidth[y] = min(s.buf.Width(), width)
 		}
 	}
 	s.touchArea(area)
@@ -310,7 +338,17 @@ func (s *Screen) InsertCell(n int) {
 	}
 
 	x, y := s.cur.X, s.cur.Y
+	width := 0
+	if y >= 0 && y < len(s.wrapped) && s.wrapped[y] {
+		width = effectiveLineWidth(s.buf.Line(y), s.wrapWidth[y])
+	}
 	s.buf.InsertCellArea(x, y, n, s.blankCell(), s.scroll)
+	if width > 0 {
+		if x <= width {
+			width = min(s.buf.Width(), width+n)
+		}
+		s.wrapWidth[y] = max(width, lineContentWidth(s.buf.Line(y)))
+	}
 }
 
 // DeleteCell deletes n cells at the cursor position moving cells to the left.
@@ -321,7 +359,17 @@ func (s *Screen) DeleteCell(n int) {
 	}
 
 	x, y := s.cur.X, s.cur.Y
+	width := 0
+	if y >= 0 && y < len(s.wrapped) && s.wrapped[y] {
+		width = effectiveLineWidth(s.buf.Line(y), s.wrapWidth[y])
+	}
 	s.buf.DeleteCellArea(x, y, n, s.blankCell(), s.scroll)
+	if width > 0 {
+		if x < width {
+			width = max(x, width-n)
+		}
+		s.wrapWidth[y] = max(width, lineContentWidth(s.buf.Line(y)))
+	}
 }
 
 // ScrollUp scrolls the content up n lines within the given region. Lines

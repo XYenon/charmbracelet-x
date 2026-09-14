@@ -405,6 +405,18 @@ func TestResizePreservesPendingWrapCursor(t *testing.T) {
 	}
 }
 
+func TestResizePreservesPendingWrapAfterWideCharacter(t *testing.T) {
+	e := NewEmulator(4, 2)
+	_, _ = e.WriteString("ab你")
+
+	e.Resize(8, 2)
+	_, _ = e.WriteString("X")
+
+	if got, want := nonEmptyLogicalStrings(e.LogicalLines()), []string{"ab你X"}; !slices.Equal(got, want) {
+		t.Fatalf("logical lines after widening and writing = %q, want %q", got, want)
+	}
+}
+
 func TestResizeMovesLinesBetweenScreenAndScrollback(t *testing.T) {
 	e := NewEmulator(8, 4)
 	_, _ = e.WriteString("one\r\ntwo\r\nthree\r\nfour")

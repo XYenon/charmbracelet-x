@@ -44,6 +44,16 @@ func TestLogicalLinesPreservePendingWrapSpace(t *testing.T) {
 	}
 }
 
+func TestLogicalLinesPreservePendingWrapSpaceThroughED2(t *testing.T) {
+	e := NewEmulator(4, 2)
+	_, _ = e.WriteString("abc ")
+	_, _ = e.WriteString("\x1b[2J")
+
+	if got, want := e.LogicalLines()[0].String(), "abc "; got != want {
+		t.Fatalf("logical line after ED 2 = %q, want %q", got, want)
+	}
+}
+
 func TestLogicalLinesCapacityDoesNotReturnPartialSoftWrap(t *testing.T) {
 	e := NewEmulator(4, 2)
 	e.SetScrollbackSize(3)

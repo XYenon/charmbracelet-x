@@ -2,6 +2,7 @@ package vt
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -200,6 +201,56 @@ func TestPhysicalLinesExcludeUnusedSpaceBeforeWideCharacter(t *testing.T) {
 	if got, want := logicalLineStrings(e.PhysicalLines())[0], text; got != want {
 		t.Fatalf("logical line after resize = %q, want %q", got, want)
 	}
+}
+
+func TestPhysicalLinesPreserveEditsPastEarlyWrap(t *testing.T) {
+	testCases := []struct {
+		name string
+		edit string
+		want string
+	}{
+		{name: "character", edit: "X", want: "abcX你"},
+		{name: "space", edit: " ", want: "abc 你"},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := NewEmulator(4, 3)
+			_, _ = e.WriteString("abc你")
+			_, _ = e.WriteString("\x1b[1;4H" + tc.edit + "\r")
+
+			if got := logicalLineStrings(e.PhysicalLines())[0]; got != tc.want {
+				t.Fatalf("logical line before resize = %q, want %q", got, tc.want)
+			}
+			e.Resize(8, 3)
+			if got := nonEmptyLogicalStrings(e.LogicalLines()); !slices.Equal(got, []string{tc.want}) {
+				t.Fatalf("logical lines after resize = %q, want %q", got, []string{tc.want})
+			}
+		})
+	}
+}
+
+func TestPhysicalLinesPreserveWidthThroughCharacterEditing(t *testing.T) {
+	t.Run("insert", func(t *testing.T) {
+		e := NewEmulator(4, 3)
+		_, _ = e.WriteString("abc你")
+		_, _ = e.WriteString("\x1b[1;3H\x1b[@\r")
+		e.Resize(8, 3)
+
+		if got, want := nonEmptyLogicalStrings(e.LogicalLines()), []string{"ab c你"}; !slices.Equal(got, want) {
+			t.Fatalf("logical lines after insert and resize = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("delete", func(t *testing.T) {
+		e := NewEmulator(4, 3)
+		_, _ = e.WriteString("abcX你")
+		_, _ = e.WriteString("\x1b[1;2H\x1b[P\r")
+		e.Resize(8, 3)
+
+		if got, want := nonEmptyLogicalStrings(e.LogicalLines()), []string{"acX你"}; !slices.Equal(got, want) {
+			t.Fatalf("logical lines after delete and resize = %q, want %q", got, want)
+		}
+	})
 }
 
 func TestPhysicalLinesPreserveSpacesThroughResize(t *testing.T) {
