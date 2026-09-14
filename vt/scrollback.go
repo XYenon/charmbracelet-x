@@ -11,8 +11,13 @@ const DefaultScrollbackSize = 10000
 
 // Scrollback represents a scrollback buffer that stores lines scrolled off the screen.
 type Scrollback struct {
-	lines    []uv.Line
-	maxLines int
+	lines                 []uv.Line
+	wrapped               []bool
+	wrapWidth             []int
+	maxLines              int
+	maxLogicalLines       int
+	headPartial           bool
+	discardingLogicalLine bool
 }
 
 // NewScrollback creates a new scrollback buffer with the given maximum number of lines.
@@ -29,29 +34,48 @@ func NewScrollback(maxLines int) *Scrollback {
 // Push adds a line to the scrollback buffer.
 // If the buffer is full, the oldest line is removed.
 func (s *Scrollback) Push(line uv.Line) {
+	s.push(line, false, 0)
+}
+
+// push adds a line and records whether it continues onto the next line.
+func (s *Scrollback) push(line uv.Line, wrapped bool, wrapWidth int) {
 	if s == nil || s.maxLines <= 0 {
 		return
 	}
+	if s.discardingLogicalLine {
+		if !wrapped {
+			s.discardingLogicalLine = false
+		}
+		return
+	}
 
-	// Find last non-empty cell to trim trailing empty cells.
-	// This helps with wrapping and window resizing.
-	lastNonEmpty := -1
-	for i := len(line) - 1; i >= 0; i-- {
-		c := &line[i]
-		if !c.IsZero() && !c.Equal(&uv.EmptyCell) {
-			lastNonEmpty = i
-			break
+	last := len(line)
+	if !wrapped && wrapWidth <= 0 {
+		// Trailing empty cells on a hard line are not part of its contents.
+		last = 0
+		for i := len(line) - 1; i >= 0; i-- {
+			c := &line[i]
+			if !c.IsZero() && !c.Equal(&uv.EmptyCell) {
+				last = i + 1
+				break
+			}
 		}
 	}
 
-	// Clone the line content up to and including the last non-empty cell
-	cloned := slices.Clone(line[:lastNonEmpty+1])
+	cloned := slices.Clone(line[:last])
 
-	if len(s.lines) >= s.maxLines {
-		// Remove oldest line and append new one
+	if s.maxLogicalLines <= 0 && len(s.lines) >= s.maxLines {
+		s.headPartial = s.wrapped[0]
 		s.lines = slices.Delete(s.lines, 0, 1)
+		s.wrapped = slices.Delete(s.wrapped, 0, 1)
+		s.wrapWidth = slices.Delete(s.wrapWidth, 0, 1)
 	}
 	s.lines = append(s.lines, cloned)
+	s.wrapped = append(s.wrapped, wrapped)
+	s.wrapWidth = append(s.wrapWidth, wrapWidth)
+	if s.maxLogicalLines > 0 {
+		s.trimLogicalLines()
+	}
 }
 
 // PushN adds n lines from the buffer starting at line y to the scrollback.
@@ -92,9 +116,29 @@ func (s *Scrollback) SetMaxLines(maxLines int) {
 
 	s.maxLines = maxLines
 	if len(s.lines) > maxLines {
-		// Remove oldest lines
-		s.lines = s.lines[len(s.lines)-maxLines:]
+		if s.maxLogicalLines > 0 {
+			s.trimLogicalLines()
+		} else {
+			cut := len(s.lines) - maxLines
+			s.headPartial = s.wrapped[cut-1]
+			s.lines = s.lines[cut:]
+			s.wrapped = s.wrapped[cut:]
+			s.wrapWidth = s.wrapWidth[cut:]
+		}
 	}
+}
+
+// SetMaxLogicalLines sets the maximum number of logical lines retained in
+// scrollback. Soft-wrapped physical rows are kept or evicted as a group. The
+// physical row limit set by [Scrollback.SetMaxLines] remains a hard memory
+// bound; a logical line larger than that limit is discarded in full.
+func (s *Scrollback) SetMaxLogicalLines(maxLines int) {
+	if s == nil || maxLines <= 0 {
+		return
+	}
+
+	s.maxLogicalLines = maxLines
+	s.trimLogicalLines()
 }
 
 // Line returns the line at the given index.
@@ -122,6 +166,10 @@ func (s *Scrollback) Clear() {
 		return
 	}
 	s.lines = s.lines[:0]
+	s.wrapped = s.wrapped[:0]
+	s.wrapWidth = s.wrapWidth[:0]
+	s.headPartial = false
+	s.discardingLogicalLine = false
 }
 
 // CellAt returns the cell at the given position in the scrollback buffer.
@@ -133,4 +181,66 @@ func (s *Scrollback) CellAt(x, y int) *uv.Cell {
 		return nil
 	}
 	return &line[x]
+}
+
+func (s *Scrollback) trimLogicalLines() {
+	if s.headPartial {
+		s.dropPartialHead()
+	}
+	for s.logicalLineCount() > s.maxLogicalLines {
+		if !s.dropOldestLogicalLine() {
+			break
+		}
+	}
+	for len(s.lines) > s.maxLines {
+		if !s.dropOldestLogicalLine() {
+			s.discardingLogicalLine = s.wrapped[len(s.wrapped)-1]
+			s.lines = s.lines[:0]
+			s.wrapped = s.wrapped[:0]
+			s.wrapWidth = s.wrapWidth[:0]
+			break
+		}
+	}
+}
+
+func (s *Scrollback) logicalLineCount() int {
+	if len(s.lines) == 0 {
+		return 0
+	}
+
+	count := 0
+	for _, wrapped := range s.wrapped {
+		if !wrapped {
+			count++
+		}
+	}
+	if s.wrapped[len(s.wrapped)-1] {
+		count++
+	}
+	return count
+}
+
+func (s *Scrollback) dropOldestLogicalLine() bool {
+	for i, wrapped := range s.wrapped {
+		if !wrapped {
+			s.lines = slices.Delete(s.lines, 0, i+1)
+			s.wrapped = slices.Delete(s.wrapped, 0, i+1)
+			s.wrapWidth = slices.Delete(s.wrapWidth, 0, i+1)
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Scrollback) dropPartialHead() {
+	s.headPartial = false
+	if s.dropOldestLogicalLine() {
+		return
+	}
+	if len(s.wrapped) > 0 {
+		s.discardingLogicalLine = s.wrapped[len(s.wrapped)-1]
+	}
+	s.lines = s.lines[:0]
+	s.wrapped = s.wrapped[:0]
+	s.wrapWidth = s.wrapWidth[:0]
 }
