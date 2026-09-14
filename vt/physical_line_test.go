@@ -242,8 +242,17 @@ func TestSafeEmulatorPhysicalLines(t *testing.T) {
 	}
 }
 
+func TestSafeEmulatorSetLogicalScrollbackSize(t *testing.T) {
+	e := NewSafeEmulator(4, 2)
+	e.SetLogicalScrollbackSize(2)
+	if got, want := e.Emulator.Scrollback().maxLogicalLines, 2; got != want {
+		t.Fatalf("logical scrollback size = %d, want %d", got, want)
+	}
+}
+
 func ExampleEmulator_PhysicalLines() {
 	e := NewEmulator(5, 3)
+	e.SetLogicalScrollbackSize(100)
 	_, _ = e.WriteString("abcdefgh\r\nxy")
 
 	var current strings.Builder

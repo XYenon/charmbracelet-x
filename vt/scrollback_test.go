@@ -1,8 +1,11 @@
 package vt
 
 import (
+	"slices"
 	"strings"
 	"testing"
+
+	uv "github.com/charmbracelet/ultraviolet"
 )
 
 func TestScrollback(t *testing.T) {
@@ -164,6 +167,169 @@ func TestScrollback(t *testing.T) {
 			t.Errorf("expected empty scrollback after ED 3, got %d", e.ScrollbackLen())
 		}
 	})
+}
+
+func TestLogicalScrollbackLimitKeepsCompleteLines(t *testing.T) {
+	sb := NewScrollback(100)
+	sb.SetMaxLogicalLines(2)
+
+	for _, line := range []struct {
+		text    string
+		wrapped bool
+	}{
+		{"aaaa", true}, {"bbbb", false},
+		{"cccc", true}, {"dddd", false},
+		{"eeee", true}, {"ffff", false},
+	} {
+		sb.push(lineFromString(line.text), line.wrapped, 4)
+	}
+
+	if got, want := scrollbackStrings(sb), []string{"cccc", "dddd", "eeee", "ffff"}; !slices.Equal(got, want) {
+		t.Fatalf("physical lines = %q, want %q", got, want)
+	}
+	if got, want := sb.wrapped, []bool{true, false, true, false}; !slices.Equal(got, want) {
+		t.Fatalf("wrapped flags = %v, want %v", got, want)
+	}
+}
+
+func TestLogicalScrollbackPhysicalLimitKeepsCompleteLines(t *testing.T) {
+	sb := NewScrollback(3)
+	sb.SetMaxLogicalLines(10)
+
+	for _, line := range []struct {
+		text    string
+		wrapped bool
+	}{
+		{"aaaa", true}, {"bbbb", false},
+		{"cccc", true}, {"dddd", false},
+	} {
+		sb.push(lineFromString(line.text), line.wrapped, 4)
+	}
+
+	if got, want := scrollbackStrings(sb), []string{"cccc", "dddd"}; !slices.Equal(got, want) {
+		t.Fatalf("physical lines = %q, want %q", got, want)
+	}
+}
+
+func TestLogicalScrollbackDiscardsOversizedLine(t *testing.T) {
+	sb := NewScrollback(2)
+	sb.SetMaxLogicalLines(10)
+
+	sb.push(lineFromString("aaaa"), true, 4)
+	sb.push(lineFromString("bbbb"), true, 4)
+	sb.push(lineFromString("cccc"), true, 4)
+	sb.push(lineFromString("dddd"), false, 4)
+	sb.push(lineFromString("next"), false, 4)
+
+	if got, want := scrollbackStrings(sb), []string{"next"}; !slices.Equal(got, want) {
+		t.Fatalf("physical lines = %q, want %q", got, want)
+	}
+	if sb.discardingLogicalLine {
+		t.Fatal("discard state should end at a hard line boundary")
+	}
+}
+
+func TestSetLogicalScrollbackLimitDropsExistingPartialHead(t *testing.T) {
+	sb := NewScrollback(3)
+	sb.push(lineFromString("aaaa"), true, 4)
+	sb.push(lineFromString("bbbb"), true, 4)
+	sb.push(lineFromString("cccc"), false, 4)
+	sb.push(lineFromString("next"), false, 4)
+
+	if !sb.headPartial {
+		t.Fatal("physical eviction should record a partial oldest line")
+	}
+	sb.SetMaxLogicalLines(10)
+	if got, want := scrollbackStrings(sb), []string{"next"}; !slices.Equal(got, want) {
+		t.Fatalf("physical lines = %q, want %q", got, want)
+	}
+}
+
+func TestPhysicalScrollbackLimitStillEvictsRows(t *testing.T) {
+	sb := NewScrollback(2)
+	sb.push(lineFromString("aaaa"), true, 4)
+	sb.push(lineFromString("bbbb"), true, 4)
+	sb.push(lineFromString("cccc"), false, 4)
+
+	if got, want := scrollbackStrings(sb), []string{"bbbb", "cccc"}; !slices.Equal(got, want) {
+		t.Fatalf("physical lines = %q, want %q", got, want)
+	}
+}
+
+func TestLogicalScrollbackSurvivesNarrowAndWideResize(t *testing.T) {
+	e := NewEmulator(8, 2)
+	e.SetScrollbackSize(4)
+	e.SetLogicalScrollbackSize(2)
+	_, _ = e.WriteString("abcdefghij\r\nklmnopqrst\r\nuvwxyzABCD")
+
+	e.Resize(4, 2)
+	if got, want := nonEmptyLogicalLines(e.PhysicalLines()), []string{"klmnopqrst", "uvwxyzABCD"}; !slices.Equal(got, want) {
+		t.Fatalf("logical lines after narrowing = %q, want %q", got, want)
+	}
+	if got := e.ScrollbackLen(); got > 4 {
+		t.Fatalf("physical scrollback length = %d, want at most 4", got)
+	}
+
+	e.Resize(12, 2)
+	if got, want := nonEmptyLogicalLines(e.PhysicalLines()), []string{"klmnopqrst", "uvwxyzABCD"}; !slices.Equal(got, want) {
+		t.Fatalf("logical lines after widening = %q, want %q", got, want)
+	}
+}
+
+func TestLogicalScrollbackWideCharactersAndHardBreaks(t *testing.T) {
+	e := NewEmulator(4, 2)
+	e.SetLogicalScrollbackSize(2)
+	_, _ = e.WriteString("你你你\r\nabcdef\r\n好e\u0301好")
+
+	logical := nonEmptyLogicalLines(e.PhysicalLines())
+	if got, want := logical[len(logical)-2:], []string{"abcdef", "好e\u0301好"}; !slices.Equal(got, want) {
+		t.Fatalf("logical lines = %q, want %q", got, want)
+	}
+}
+
+func TestLogicalScrollbackED2KeepsBlankContinuation(t *testing.T) {
+	e := NewEmulator(4, 3)
+	e.SetLogicalScrollbackSize(10)
+	_, _ = e.WriteString("abc     ")
+	_, _ = e.WriteString("\x1b[2J")
+
+	if got, want := logicalLineStrings(e.PhysicalLines())[0], "abc     "; got != want {
+		t.Fatalf("logical line after ED 2 = %q, want %q", got, want)
+	}
+}
+
+func TestLogicalScrollbackAlternateScreenIsIndependent(t *testing.T) {
+	e := NewEmulator(4, 2)
+	e.SetLogicalScrollbackSize(1)
+	_, _ = e.WriteString("main-one\r\nmain-two")
+	before := scrollbackStrings(e.Scrollback())
+
+	_, _ = e.WriteString("\x1b[?1049h")
+	_, _ = e.WriteString("alternate-screen-content")
+	if got := scrollbackStrings(e.Scrollback()); !slices.Equal(got, before) {
+		t.Fatalf("main scrollback changed on alternate screen: got %q, want %q", got, before)
+	}
+}
+
+func lineFromString(text string) uv.Line {
+	line := make(uv.Line, 0, len([]rune(text)))
+	for _, r := range text {
+		line = append(line, uv.Cell{Content: string(r), Width: 1})
+	}
+	return line
+}
+
+func scrollbackStrings(sb *Scrollback) []string {
+	lines := make([]string, sb.Len())
+	for i := range lines {
+		lines[i] = sb.Line(i).String()
+	}
+	return lines
+}
+
+func nonEmptyLogicalLines(lines []PhysicalLine) []string {
+	logical := logicalLineStrings(lines)
+	return slices.DeleteFunc(logical, func(line string) bool { return line == "" })
 }
 
 func TestResizeReflowsSoftWrappedLines(t *testing.T) {

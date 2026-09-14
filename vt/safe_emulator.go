@@ -189,6 +189,14 @@ func (se *SafeEmulator) PhysicalLines() []PhysicalLine {
 	return se.Emulator.PhysicalLines()
 }
 
+// LogicalLines returns an immutable logical-line snapshot of scrollback and
+// the active screen in a concurrency-safe manner.
+func (se *SafeEmulator) LogicalLines() []LogicalLine {
+	se.mu.RLock()
+	defer se.mu.RUnlock()
+	return se.Emulator.LogicalLines()
+}
+
 // Scrollback returns the scrollback buffer in a concurrency-safe manner.
 func (se *SafeEmulator) Scrollback() *Scrollback {
 	se.mu.RLock()
@@ -215,6 +223,14 @@ func (se *SafeEmulator) SetScrollbackSize(maxLines int) {
 	se.mu.Lock()
 	defer se.mu.Unlock()
 	se.Emulator.SetScrollbackSize(maxLines)
+}
+
+// SetLogicalScrollbackSize sets the logical scrollback size in a
+// concurrency-safe manner.
+func (se *SafeEmulator) SetLogicalScrollbackSize(maxLines int) {
+	se.mu.Lock()
+	defer se.mu.Unlock()
+	se.Emulator.SetLogicalScrollbackSize(maxLines)
 }
 
 // ClearScrollback clears the scrollback buffer in a concurrency-safe manner.

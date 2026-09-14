@@ -230,7 +230,25 @@ func resizedCursor(pos uv.Position, start, width, height int) (x, y int, pastEnd
 }
 
 func (s *Scrollback) replace(lines []uv.Line, wrapped []bool, wrapWidth []int) {
-	if len(lines) > s.maxLines {
+	if s.discardingLogicalLine {
+		end := -1
+		for i, continues := range wrapped {
+			if !continues {
+				end = i
+				break
+			}
+		}
+		if end < 0 {
+			return
+		}
+		lines = lines[end+1:]
+		wrapped = wrapped[end+1:]
+		wrapWidth = wrapWidth[end+1:]
+		s.discardingLogicalLine = false
+	}
+	if s.maxLogicalLines <= 0 && len(lines) > s.maxLines {
+		cut := len(lines) - s.maxLines
+		s.headPartial = wrapped[cut-1]
 		lines = lines[len(lines)-s.maxLines:]
 		wrapped = wrapped[len(wrapped)-s.maxLines:]
 		wrapWidth = wrapWidth[len(wrapWidth)-s.maxLines:]
@@ -238,4 +256,7 @@ func (s *Scrollback) replace(lines []uv.Line, wrapped []bool, wrapWidth []int) {
 	s.lines = slices.Clone(lines)
 	s.wrapped = slices.Clone(wrapped)
 	s.wrapWidth = slices.Clone(wrapWidth)
+	if s.maxLogicalLines > 0 {
+		s.trimLogicalLines()
+	}
 }

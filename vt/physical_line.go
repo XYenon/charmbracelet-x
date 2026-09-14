@@ -76,7 +76,17 @@ func (e *Emulator) PhysicalLines() []PhysicalLine {
 		lines[len(lines)-1].wrapped = false
 	}
 
-	for y := 0; y < e.scr.Height(); y++ {
+	screenStart := 0
+	if !e.IsAltScreen() && scrollback != nil && scrollback.discardingLogicalLine {
+		for screenStart < e.scr.Height() {
+			continues := e.scr.wrapped[screenStart]
+			screenStart++
+			if !continues {
+				break
+			}
+		}
+	}
+	for y := screenStart; y < e.scr.Height(); y++ {
 		wrapped := y < len(e.scr.wrapped) && e.scr.wrapped[y]
 		wrapWidth := e.scr.wrapWidth[y]
 		if e.atPhantom && y == e.scr.cur.Y {

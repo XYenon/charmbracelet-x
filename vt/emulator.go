@@ -463,6 +463,17 @@ func (e *Emulator) SetScrollbackSize(maxLines int) {
 	e.scrs[0].SetScrollbackSize(maxLines)
 }
 
+// SetLogicalScrollbackSize sets the maximum number of logical lines retained
+// in the main screen's scrollback. A trailing group that continues onto the
+// main screen counts as one logical line. Soft-wrapped physical rows are kept
+// or evicted together. [Emulator.SetScrollbackSize] remains the hard physical
+// row limit, so fewer logical lines may be retained when their physical rows
+// exceed that bound. A single logical line larger than the physical limit is
+// omitted in full. The alternate screen has no scrollback and is unaffected.
+func (e *Emulator) SetLogicalScrollbackSize(maxLines int) {
+	e.scrs[0].Scrollback().SetMaxLogicalLines(maxLines)
+}
+
 // ClearScrollback clears the scrollback buffer.
 func (e *Emulator) ClearScrollback() {
 	sb := e.Scrollback()

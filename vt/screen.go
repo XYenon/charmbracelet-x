@@ -93,18 +93,34 @@ func (s *Screen) Clear() {
 	s.ClearArea(s.Bounds())
 }
 
-// ClearWithScrollback saves all non-empty lines to scrollback before clearing.
-// This is used for operations like ED 2 (erase screen) where content should
-// be preserved in history.
+// ClearWithScrollback saves non-empty lines and complete soft-wrap groups to
+// scrollback before clearing. This is used for operations like ED 2 (erase
+// screen) where content should be preserved in history.
 func (s *Screen) ClearWithScrollback() {
-	if s.scrollback != nil {
-		// Save all lines that have content before clearing
-		for y := 0; y < s.buf.Height(); y++ {
-			line := s.buf.Line(y)
-			if line != nil && !s.isLineEmpty(line) {
-				s.scrollback.push(line, s.wrapped[y], s.wrapWidth[y])
+	s.clearWithScrollback(false)
+}
+
+func (s *Screen) clearWithScrollback(pendingWrap bool) {
+	if s.scrollback == nil {
+		s.Clear()
+		return
+	}
+
+	continued := s.scrollback.discardingLogicalLine ||
+		(s.scrollback.Len() > 0 && s.scrollback.wrapped[s.scrollback.Len()-1])
+	for y := 0; y < s.buf.Height(); y++ {
+		line := s.buf.Line(y)
+		if line != nil && (!s.isLineEmpty(line) || continued || s.wrapped[y]) {
+			wrapWidth := s.wrapWidth[y]
+			if continued && y == s.cur.Y {
+				wrapWidth = s.cur.X
+				if pendingWrap {
+					wrapWidth = s.buf.Width()
+				}
 			}
+			s.scrollback.push(line, s.wrapped[y], wrapWidth)
 		}
+		continued = s.wrapped[y]
 	}
 	s.Clear()
 }
